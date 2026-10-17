@@ -42,14 +42,26 @@ jobs:
           VOICE: ${{ github.event.inputs.voice }}
         run: python3 render.py
 
-      - name: Publish video as a release file
+      - name: Publish video (served by jsDelivr CDN as video/mp4)
         id: rel
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="reel-${{ github.event.inputs.row_id }}-${{ github.run_id }}"
-          gh release create "$TAG" out/reel.mp4 --title "$TAG" --notes "Success Does Wonders reel for row ${{ github.event.inputs.row_id }}"
-          echo "url=https://github.com/${{ github.repository }}/releases/download/$TAG/reel.mp4" >> "$GITHUB_OUTPUT"
+          SIZE=$(stat -c %s out/reel.mp4)
+          if [ "$SIZE" -gt 18000000 ]; then
+            ffmpeg -y -loglevel error -i out/reel.mp4 -c:v libx264 -preset veryfast -crf 27 -c:a copy -movflags +faststart out/small.mp4 && mv out/small.mp4 out/reel.mp4
+          fi
+          echo "::notice::reel size $(stat -c %s out/reel.mp4) bytes"
+          NAME="reel-${{ github.event.inputs.row_id }}-${{ github.run_id }}.mp4"
+          git config user.name "sdw-reels-bot"
+          git config user.email "sdw-reels-bot@users.noreply.github.com"
+          git fetch -q --depth 1 origin media || true
+          if git rev-parse -q --verify origin/media >/dev/null; then
+            git switch -q -c media origin/media
+          else
+            git switch -q --orphan media
+          fi
+          mkdir -p reels && cp out/reel.mp4 "reels/$NAME"
+          git add "reels/$NAME" && git commit -qm "Add $NAME" && git push -q origin media
+          echo "url=https://cdn.jsdelivr.net/gh/${{ github.repository }}@media/reels/$NAME" >> "$GITHUB_OUTPUT"
 
       - name: Tell n8n the reel is ready
         run: |
