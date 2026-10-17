@@ -1,0 +1,65 @@
+name: Render reel
+
+on:
+  workflow_dispatch:
+    inputs:
+      row_id:
+        description: 'SDW Instagram Calendar row id'
+        required: true
+      n8n_base:
+        description: 'n8n base URL, e.g. https://swaroopa.fagent.cloud'
+        required: true
+      voice:
+        description: 'edge-tts voice'
+        required: false
+        default: 'en-IN-NeerjaNeural'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: reel-${{ github.event.inputs.row_id }}
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-dejavu-core
+          pip install --quiet edge-tts
+
+      - name: Render reel
+        env:
+          ROW_ID: ${{ github.event.inputs.row_id }}
+          POST_URL: ${{ github.event.inputs.n8n_base }}/webhook/sdw-post?id=${{ github.event.inputs.row_id }}
+          SLIDE_BASE: ${{ github.event.inputs.n8n_base }}/webhook/sdw-slide
+          VOICE: ${{ github.event.inputs.voice }}
+        run: python3 render.py
+
+      - name: Publish video as a release file
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="reel-${{ github.event.inputs.row_id }}-${{ github.run_id }}"
+          gh release create "$TAG" out/reel.mp4 --title "$TAG" --notes "Success Does Wonders reel for row ${{ github.event.inputs.row_id }}"
+          echo "url=https://github.com/${{ github.repository }}/releases/download/$TAG/reel.mp4" >> "$GITHUB_OUTPUT"
+
+      - name: Tell n8n the reel is ready
+        run: |
+          curl -sS -X POST "${{ github.event.inputs.n8n_base }}/webhook/sdw-reel-ready" \
+            -H 'Content-Type: application/json' \
+            -d "{\"id\": ${{ github.event.inputs.row_id }}, \"url\": \"${{ steps.rel.outputs.url }}\", \"run\": \"${{ github.run_id }}\"}"
+
+      - name: Tell n8n if it failed
+        if: failure()
+        run: |
+          curl -sS -X POST "${{ github.event.inputs.n8n_base }}/webhook/sdw-reel-ready" \
+            -H 'Content-Type: application/json' \
+            -d "{\"id\": ${{ github.event.inputs.row_id }}, \"error\": \"Render failed - see GitHub Actions run ${{ github.run_id }}\"}"
