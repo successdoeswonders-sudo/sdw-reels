@@ -40,10 +40,22 @@ def duration(path):
                       '-of', 'default=nw=1:nk=1', str(path)]).strip())
 
 
-def fetch(url, dest):
-    req = urllib.request.Request(url, headers={'User-Agent': 'sdw-reels'})
-    with urllib.request.urlopen(req, timeout=120) as r, open(dest, 'wb') as f:
-        shutil.copyfileobj(r, f)
+def fetch(url, dest, tries=6):
+    """Download with retries - the n8n server is sometimes slow to answer."""
+    import time
+    last = None
+    for attempt in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'sdw-reels'})
+            with urllib.request.urlopen(req, timeout=60) as r, open(dest, 'wb') as f:
+                shutil.copyfileobj(r, f)
+            return
+        except Exception as e:
+            last = e
+            print(f'::warning::fetch attempt {attempt + 1} failed for {url.split("?")[0]}: {e}', flush=True)
+            time.sleep(10 * (attempt + 1))
+    print(f'::error::could not download {url.split("?")[0]}: {last}', flush=True)
+    raise SystemExit(1)
 
 
 def clean(t):

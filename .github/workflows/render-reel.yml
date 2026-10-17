@@ -53,13 +53,13 @@ jobs:
 
       - name: Tell n8n the reel is ready
         run: |
-          curl -sS -X POST "${{ github.event.inputs.n8n_base }}/webhook/sdw-reel-ready" \
+          curl -sS --retry 6 --retry-all-errors --retry-delay 10 --connect-timeout 20 -m 60 -X POST "${{ github.event.inputs.n8n_base }}/webhook/sdw-reel-ready" \
             -H 'Content-Type: application/json' \
             -d "{\"id\": ${{ github.event.inputs.row_id }}, \"url\": \"${{ steps.rel.outputs.url }}\", \"run\": \"${{ github.run_id }}\"}"
 
       - name: Tell n8n if it failed
         if: failure()
         run: |
-          curl -sS -X POST "${{ github.event.inputs.n8n_base }}/webhook/sdw-reel-ready" \
+          curl -sS --retry 6 --retry-all-errors --retry-delay 10 --connect-timeout 20 -m 60 -X POST "${{ github.event.inputs.n8n_base }}/webhook/sdw-reel-ready" \
             -H 'Content-Type: application/json' \
             -d "{\"id\": ${{ github.event.inputs.row_id }}, \"error\": \"Render failed - see GitHub Actions run ${{ github.run_id }}\"}"
