@@ -1,0 +1,12 @@
+name: Diag
+on: workflow_dispatch
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: |
+          getent ahosts swaroopa.fagent.cloud || true
+          curl -4 -sS -o /dev/null -w "v4 %{http_code} %{time_total}\n" -m 20 "https://swaroopa.fagent.cloud/webhook/sdw-slide?id=6&n=1" || echo "v4 fail $?"
+          curl -6 -sS -o /dev/null -w "v6 %{http_code} %{time_total}\n" -m 20 "https://swaroopa.fagent.cloud/webhook/sdw-slide?id=6&n=1" || echo "v6 fail $?"
+          curl -sS -o /dev/null -w "gh %{http_code}\n" -m 20 https://example.com || true
