@@ -12,7 +12,7 @@ on:
       voice:
         description: 'edge-tts voice'
         required: false
-        default: 'en-IN-NeerjaNeural'
+        default: 'en-IN-NeerjaExpressiveNeural'
 
 permissions:
   contents: write

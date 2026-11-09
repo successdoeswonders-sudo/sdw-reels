@@ -24,11 +24,12 @@ BG = '0x14161A'
 GOLD = '0xD4B06A'
 ROOT = Path(__file__).resolve().parent
 FONT = os.environ.get('FONT', str(ROOT / 'fonts' / 'Poppins-Bold.ttf'))
-VOICE = os.environ.get('VOICE') or 'en-IN-NeerjaNeural'
+VOICE = os.environ.get('VOICE') or 'en-IN-NeerjaExpressiveNeural'
+RATE = os.environ.get('RATE') or '+4%'
 OFFLINE = os.environ.get('OFFLINE') == '1'
 WORK = ROOT / 'work'
 OUT = ROOT / 'out'
-GAP = 0.12  # pause after each spoken line (keeps the pace fast)
+
 
 
 def run(cmd):
@@ -68,14 +69,67 @@ def clean(t):
     return re.sub(r'\s+', ' ', t).strip()
 
 
-def tts(text, mp3):
-    if OFFLINE:  # placeholder voice for local tests: soft tone, ~0.33 s per word
-        secs = max(1.2, 0.33 * len(text.split()))
-        run(['ffmpeg', '-y', '-f', 'lavfi', '-i', f'sine=frequency=220:duration={secs}',
+def norm(w):
+    return re.sub(r'[^a-z0-9]', '', w.lower())
+
+
+def tts_full(text, mp3):
+    """Speak the WHOLE script in one go (natural flow between sentences) and return
+    word timings [(word, start, end)] in seconds."""
+    if OFFLINE:  # placeholder voice for local tests: soft tone, 0.33 s per word
+        words, t = [], 0.0
+        for w in text.split():
+            words.append((w, t, t + 0.28)); t += 0.33
+            if w.endswith(('.', '!', '?')):
+                t += 0.25
+        run(['ffmpeg', '-y', '-f', 'lavfi', '-i', f'sine=frequency=220:duration={t + 0.3:.2f}',
              '-af', 'volume=0.15', str(mp3)])
-        return
-    run([sys.executable, '-m', 'edge_tts', '--voice', VOICE, '--rate', '+15%',
-         '--text', text, '--write-media', str(mp3)])
+        return words
+    import asyncio
+    import edge_tts
+
+    async def speak(voice):
+        words = []
+        try:
+            com = edge_tts.Communicate(text, voice, rate=RATE, boundary='WordBoundary')
+        except TypeError:  # older edge-tts always sends word boundaries
+            com = edge_tts.Communicate(text, voice, rate=RATE)
+        with open(mp3, 'wb') as f:
+            async for chunk in com.stream():
+                if chunk['type'] == 'audio':
+                    f.write(chunk['data'])
+                elif chunk['type'] == 'WordBoundary':
+                    st = chunk['offset'] / 1e7
+                    words.append((chunk['text'], st, st + chunk['duration'] / 1e7))
+        return words
+
+    last = None
+    for voice in [VOICE, 'en-IN-NeerjaNeural']:
+        for attempt in range(3):
+            try:
+                words = asyncio.run(speak(voice))
+                if words and Path(mp3).stat().st_size > 1000:
+                    print(f'voice: {voice}, {len(words)} words', flush=True)
+                    return words
+            except Exception as e:
+                last = e
+                print(f'::warning::tts {voice} attempt {attempt + 1}: {e}', flush=True)
+                time.sleep(5)
+    raise RuntimeError(f'text-to-speech failed: {last}')
+
+
+def split_by_line(lines, words):
+    """Assign the spoken word timings back to each script line."""
+    out, k = [], 0
+    for line in lines:
+        target = norm(line)
+        got, acc = [], ''
+        while k < len(words) and (len(acc) < len(target) or not got):
+            got.append(words[k]); acc += norm(words[k][0]); k += 1
+        out.append(got)
+    if k < len(words) and out:
+        out[-1].extend(words[k:])
+    return out
 
 
 def txt(name, content):
@@ -84,27 +138,34 @@ def txt(name, content):
     return f
 
 
-def caption_filters(text, secs, idx, y):
-    """Fast 2-word captions, timed across the spoken line (word-count weighted)."""
+def caption_filters(text, secs, idx, y, timing=None):
+    """Fast 2-word captions, synced to the real word timings (relative to this segment)."""
     words = text.split()
     chunks, cur = [], []
     for w in words:
         cur.append(w)
         if len(cur) >= 2 or w.endswith(('.', ',', '?', '!', ':')):
-            chunks.append(' '.join(cur)); cur = []
+            chunks.append(cur); cur = []
     if cur:
-        chunks.append(' '.join(cur))
+        chunks.append(cur)
+    out, pos = [], 0
     total = max(1, len(words))
-    t, out = 0.0, []
-    speak = max(0.4, secs - GAP)
     for j, c in enumerate(chunks):
-        d = speak * len(c.split()) / total
-        end = secs if j == len(chunks) - 1 else t + d
-        f = txt(f'c{idx:02d}_{j:02d}.txt', c.upper())
+        if timing and len(timing) == len(words):
+            t = timing[pos][0]
+        else:
+            t = secs * pos / total
+        pos += len(c)
+        if j == len(chunks) - 1:
+            end = secs
+        elif timing and len(timing) == len(words):
+            end = timing[pos][0]
+        else:
+            end = secs * pos / total
+        f = txt(f'c{idx:02d}_{j:02d}.txt', ' '.join(c).upper())
         out.append(f"drawtext=fontfile={FONT}:textfile={f}:fontcolor={GOLD}:fontsize=92:"
                    f"x=(w-text_w)/2:y={y}:borderw=9:bordercolor=black:"
-                   f"enable='between(t,{t:.2f},{end:.2f})'")
-        t += d
+                   f"enable='between(t,{max(0, t):.2f},{end:.2f})'")
     return out
 
 
@@ -129,11 +190,11 @@ def brand_bars():
     return f"drawbox=x=0:y=0:w={W}:h=12:color={GOLD}:t=fill,drawbox=x=0:y={H - 12}:w={W}:h=12:color={GOLD}:t=fill"
 
 
-def video_segment(idx, src, text, secs, title, reuse=0):
+def video_segment(idx, src, text, secs, title, reuse=0, timing=None):
     """Full-screen footage: fill 9:16, slow push-in, darkened for readable text.
     reuse>0 means the clip was already shown: mirror it and start later so it looks fresh."""
     out = WORK / f'seg{idx:02d}.mp4'
-    caps = caption_filters(text, secs, idx, 1180)
+    caps = caption_filters(text, secs, idx, 1180, timing)
     vary = ['hflip'] if reuse % 2 == 1 else []
     vf = ','.join([
         f"scale={W}:{H}:force_original_aspect_ratio=increase", f"crop={W}:{H}", *vary,
@@ -146,11 +207,11 @@ def video_segment(idx, src, text, secs, title, reuse=0):
     return out
 
 
-def slide_segment(idx, still, text, secs):
+def slide_segment(idx, still, text, secs, timing=None):
     """Fallback: branded slide card on a blurred copy of itself, slow zoom, captions below."""
     out = WORK / f'seg{idx:02d}.mp4'
     frames = int(secs * FPS) + 1
-    caps = caption_filters(text, secs, idx, 1560)
+    caps = caption_filters(text, secs, idx, 1560, timing)
     z = ("zoompan=z='min(1+0.0012*on,1.10)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
          f"d={frames}:s=960x1200:fps={FPS}")
     fc = (f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},boxblur=30:2,"
@@ -231,27 +292,30 @@ def main():
             print('::warning::footage skipped:', e)
             return None, 0
 
-    segs, voices = [], []
-    for i, line in enumerate(script):
-        text = clean(line.get('text', ''))
-        if not text:
-            continue
-        mp3 = WORK / f'v{i:02d}.mp3'
-        tts(text, mp3)
-        secs = round(duration(mp3) + GAP, 2)
+    lines = [clean(l.get('text', '')) for l in script]
+    keep = [i for i, t in enumerate(lines) if t]
+    lines_k = [lines[i] for i in keep]
+    voice_mp3 = WORK / 'voice.mp3'
+    words = tts_full(' '.join(lines_k), voice_mp3)
+    per_line = split_by_line(lines_k, words)
+    voice_len = duration(voice_mp3)
+    starts = [0.0] + [pl[0][1] if pl else 0.0 for pl in per_line[1:]]
+    ends = starts[1:] + [voice_len + 0.35]
+
+    segs = []
+    for n, i in enumerate(keep):
+        text = lines_k[n]
+        secs = round(max(0.6, ends[n] - starts[n]), 3)
+        timing = [(w[1] - starts[n], w[2] - starts[n]) for w in per_line[n]]
         clip, reuse = footage(i)
         if clip:
-            segs.append(video_segment(i, clip, text, secs, title, reuse))
+            segs.append(video_segment(i, clip, text, secs, title, reuse, timing))
         else:
-            segs.append(slide_segment(i, slide_img(int(line.get('slide', 1) or 1)), text, secs))
-        pad = WORK / f'p{i:02d}.wav'
-        run(['ffmpeg', '-y', '-i', str(mp3), '-af', f'apad=pad_dur={GAP}', '-ar', '44100', '-ac', '2', str(pad)])
-        voices.append(pad)
+            segs.append(slide_segment(i, slide_img(int(script[i].get('slide', 1) or 1)), text, secs, timing))
 
     (WORK / 'v.txt').write_text(''.join(f"file '{p.name}'\n" for p in segs))
-    (WORK / 'a.txt').write_text(''.join(f"file '{p.name}'\n" for p in voices))
     run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', str(WORK / 'v.txt'), '-c', 'copy', str(WORK / 'video.mp4')])
-    run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', str(WORK / 'a.txt'), str(WORK / 'voice.wav')])
+    run(['ffmpeg', '-y', '-i', str(voice_mp3), '-af', 'apad=pad_dur=0.4', '-ar', '44100', '-ac', '2', str(WORK / 'voice.wav')])
     total = duration(WORK / 'video.mp4')
     music_bed(total, WORK / 'music.wav')
     run(['ffmpeg', '-y', '-i', str(WORK / 'video.mp4'), '-i', str(WORK / 'voice.wav'), '-i', str(WORK / 'music.wav'),
