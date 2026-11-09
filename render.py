@@ -125,16 +125,19 @@ def brand_bars():
     return f"drawbox=x=0:y=0:w={W}:h=12:color={GOLD}:t=fill,drawbox=x=0:y={H - 12}:w={W}:h=12:color={GOLD}:t=fill"
 
 
-def video_segment(idx, src, text, secs, title):
-    """Full-screen footage: fill 9:16, slow push-in, darkened for readable text."""
+def video_segment(idx, src, text, secs, title, reuse=0):
+    """Full-screen footage: fill 9:16, slow push-in, darkened for readable text.
+    reuse>0 means the clip was already shown: mirror it and start later so it looks fresh."""
     out = WORK / f'seg{idx:02d}.mp4'
     caps = caption_filters(text, secs, idx, 1180)
+    vary = ['hflip'] if reuse % 2 == 1 else []
     vf = ','.join([
-        f"scale={W}:{H}:force_original_aspect_ratio=increase", f"crop={W}:{H}",
+        f"scale={W}:{H}:force_original_aspect_ratio=increase", f"crop={W}:{H}", *vary,
         f"scale=w='{W}*(1+0.04*t/{secs})':h=-2:eval=frame", f"crop={W}:{H}",
         "setsar=1", f"fps={FPS}", "eq=brightness=-0.10:saturation=1.15",
         title_filter(title), *caps, handle_filter(), brand_bars(), "format=yuv420p"])
-    run(['ffmpeg', '-y', '-stream_loop', '-1', '-i', str(src), '-t', f'{secs}', '-an',
+    start = ['-ss', f'{(reuse * 1.1) % 2:.2f}'] if reuse else []
+    run(['ffmpeg', '-y', '-stream_loop', '-1', *start, '-i', str(src), '-t', f'{secs}', '-an',
          '-vf', vf, '-r', str(FPS), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', str(out)])
     return out
 
@@ -202,20 +205,27 @@ def main():
                 fetch(f"{os.environ['SLIDE_BASE']}?id={os.environ['ROW_ID']}&n={n}", dest)
         return dest
 
+    cache, uses = {}, {}
+
     def footage(i):
-        """Moving footage for line i: AI hook clip for the opening, then stock B-roll."""
+        """Moving footage for line i: AI hook clip for the opening, then AI / stock B-roll.
+        Returns (path, times_already_used)."""
         url = post.get('hook_clip_url') if i == 0 and post.get('hook_clip_url') else (broll[i] if i < len(broll) else '')
         if not url:
-            return None
+            return None, 0
+        if url in cache:
+            uses[url] += 1
+            return cache[url], uses[url]
         dest = WORK / f'clip{i:02d}.mp4'
         try:
             fetch(url, dest, tries=3)
             if duration(dest) < 0.5:
-                return None
-            return dest
+                return None, 0
+            cache[url], uses[url] = dest, 0
+            return dest, 0
         except Exception as e:  # never block the reel on optional footage
             print('::warning::footage skipped:', e)
-            return None
+            return None, 0
 
     segs, voices = [], []
     for i, line in enumerate(script):
@@ -225,9 +235,9 @@ def main():
         mp3 = WORK / f'v{i:02d}.mp3'
         tts(text, mp3)
         secs = round(duration(mp3) + GAP, 2)
-        clip = footage(i)
+        clip, reuse = footage(i)
         if clip:
-            segs.append(video_segment(i, clip, text, secs, title))
+            segs.append(video_segment(i, clip, text, secs, title, reuse))
         else:
             segs.append(slide_segment(i, slide_img(int(line.get('slide', 1) or 1)), text, secs))
         pad = WORK / f'p{i:02d}.wav'
