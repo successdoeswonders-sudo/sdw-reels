@@ -109,11 +109,15 @@ def caption_filters(text, secs, idx, y):
 
 
 def title_filter(title):
-    """Hook title, top of screen, visible from the first frame."""
+    """Hook title, top of screen, visible from the first frame (one drawtext per line,
+    so no line-break glyphs ever show)."""
     lines = textwrap.wrap(clean(title), 20)[:3]
-    f = txt('title.txt', '\n'.join(lines))
-    return (f"drawtext=fontfile={FONT}:textfile={f}:fontcolor=white:fontsize=70:line_spacing=14:"
-            f"x=(w-text_w)/2:y=230:box=1:boxcolor=black@0.62:boxborderw=26:text_align=center")
+    out = []
+    for k, line in enumerate(lines):
+        f = txt(f'title{k}.txt', line)
+        out.append(f"drawtext=fontfile={FONT}:textfile={f}:fontcolor=white:fontsize=70:"
+                   f"x=(w-text_w)/2:y={230 + k * 112}:box=1:boxcolor=black@0.62:boxborderw=22")
+    return ','.join(out) if out else 'null'
 
 
 def handle_filter():
