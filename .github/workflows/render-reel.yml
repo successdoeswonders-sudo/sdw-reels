@@ -12,7 +12,7 @@ on:
       voice:
         description: 'edge-tts voice'
         required: false
-        default: 'en-US-AvaMultilingualNeural'
+        default: 'en-US-AndrewMultilingualNeural'
 
 permissions:
   contents: write
