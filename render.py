@@ -24,7 +24,7 @@ BG = '0x14161A'
 GOLD = '0xD4B06A'
 ROOT = Path(__file__).resolve().parent
 FONT = os.environ.get('FONT', str(ROOT / 'fonts' / 'Poppins-Bold.ttf'))
-VOICE = os.environ.get('VOICE') or 'en-IN-NeerjaExpressiveNeural'
+VOICE = os.environ.get('VOICE') or 'en-US-AvaMultilingualNeural'
 RATE = os.environ.get('RATE') or '+4%'
 OFFLINE = os.environ.get('OFFLINE') == '1'
 WORK = ROOT / 'work'
@@ -104,7 +104,7 @@ def tts_full(text, mp3):
         return words
 
     last = None
-    for voice in [VOICE, 'en-IN-NeerjaNeural']:
+    for voice in [VOICE, 'en-US-AriaNeural']:
         for attempt in range(3):
             try:
                 words = asyncio.run(speak(voice))
